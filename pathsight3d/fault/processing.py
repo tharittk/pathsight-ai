@@ -185,7 +185,7 @@ def _polygon_to_xyz(polygon, z: float) -> np.ndarray | None:
 def preprocess_fault(
     filepath: str,
     *,
-    offset_distance: float = 200.0,
+    offset_distance: float = 500.0,
     grid_resolution: float = 50.0,
     z_step: float = 50.0,
     resample_spacing: float = 50.0,

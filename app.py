@@ -62,7 +62,7 @@ GRID_CFG = dict(
 )
 
 # ── max display points per fault cloud (subsampled for render speed) ────
-_MAX_DISP = 3_000
+_MAX_DISP = 30_000
 
 # ── Colour palette ──────────────────────────────────────────────────────
 CLR_WELL_DEFAULT   = "#1f77b4"   # blue  – unselected wells
@@ -91,10 +91,10 @@ class PathSightApp(tk.Tk):
 
         # Fault / grid state (populated by _load_fault_and_grid)
         self.grid: RegularGrid3D | None = None
-        self.fault_plane: np.ndarray | None = None
-        self.dip_side: np.ndarray | None = None
-        self.anti_dip_side: np.ndarray | None = None
-        self._fault_error: str | None = None   # non-None if loading failed
+        # self.fault_plane: np.ndarray | None = None
+        # self.dip_side: np.ndarray | None = None
+        # self.anti_dip_side: np.ndarray | None = None
+        # self._fault_error: str | None = None   # non-None if loading failed
 
         # ── Load fault + initialise grid (before building the UI so the
         #    status bar can show the outcome immediately) ─────────────────
@@ -116,8 +116,7 @@ class PathSightApp(tk.Tk):
 
         # ── 2. Process fault file ────────────────────────────────────────
         if not os.path.isfile(FAULT_FILE):
-            self._fault_error = f"Fault file not found: {FAULT_FILE}"
-            logger.error(self._fault_error)
+            logger.error(f"Fault file not found: {FAULT_FILE}")
             return
 
         logger.info("Processing fault file: %s", FAULT_FILE)
@@ -132,13 +131,8 @@ class PathSightApp(tk.Tk):
                 max_turn_angle=60.0,
             )
         except Exception as exc:
-            self._fault_error = f"Fault processing failed: {exc}"
-            logger.exception(self._fault_error)
+            logger.exception(f"Fault processing failed: {exc}")
             return
-
-        self.fault_plane    = fp
-        self.dip_side       = ds
-        self.anti_dip_side  = ads
 
         logger.info(
             "Fault arrays → fault_plane: %d pts | dip_side: %d pts | "
@@ -224,13 +218,7 @@ class PathSightApp(tk.Tk):
         row += 1
 
         info_text = (
-            "1. Enter the wellhead (X, Y) and click 'Set Wellhead'.\n"
-            "2. Click on blue well markers in the 3-D view to\n"
-            "   select / deselect offset wells.\n"
-            "3. Selected wells turn orange and their\n"
-            "   distributions appear below.\n"
-            "4. Click 'Run Optimisation' to generate the\n"
-            "   well path (mock: vertical)."
+            "Instructions: < TBC >\n"
         )
         ttk.Label(sec_info, text=info_text, justify=tk.LEFT,
                   wraplength=320).grid(row=0, column=0, sticky="w")
@@ -273,17 +261,7 @@ class PathSightApp(tk.Tk):
 
         # ── Section: Status bar ─────────────────────────────────────────
         row += 1
-        if self._fault_error:
-            _init_status = f"⚠ {self._fault_error}"
-        elif self.fault_plane is not None:
-            _init_status = (
-                f"Fault loaded – fault_plane: {len(self.fault_plane):,} pts | "
-                f"dip: {len(self.dip_side):,} pts | "
-                f"anti-dip: {len(self.anti_dip_side):,} pts | "
-                f"grid active: {self.grid.n_active:,} cells"
-            )
-        else:
-            _init_status = "Ready."
+        _init_status = "Ready."
         self.status_var = tk.StringVar(value=_init_status)
         status_bar = ttk.Label(parent, textvariable=self.status_var,
                                relief=tk.SUNKEN, anchor="w", padding=4)
@@ -306,27 +284,37 @@ class PathSightApp(tk.Tk):
         self.ax.set_ylim(GRID_CFG["y_min"], GRID_CFG["y_max"])
         self.ax.set_zlim(GRID_CFG["z_max"], 0)   # depth positive-down
 
-        # ── Fault point clouds ──────────────────────────────────────────
-        def _scatter_fault(pts: np.ndarray | None, color: str,
-                           label: str, alpha: float = 0.25,
-                           size: float = 4) -> None:
-            if pts is None or len(pts) == 0:
-                return
-            # Subsample for render performance
-            idx = (np.arange(len(pts))
-                   if len(pts) <= _MAX_DISP
-                   else np.random.choice(len(pts), _MAX_DISP, replace=False))
-            p = pts[idx]
-            self.ax.scatter(p[:, 0], p[:, 1], p[:, 2],
-                            c=color, s=size, alpha=alpha,
-                            linewidths=0, label=label, zorder=2)
+        # ── Fault bands – plotted from grid cell centres, not raw arrays ──
+        if self.grid is not None and self.grid.n_active > 0:
+            act  = self.grid.active          # (nx, ny, nz) bool
+            vals = self.grid.values          # (nx, ny, nz) float32
+            xc   = self.grid.ds.coords["x"].values
+            yc   = self.grid.ds.coords["y"].values
+            zc   = self.grid.ds.coords["z"].values
 
-        _scatter_fault(self.fault_plane,   CLR_FAULT_PLANE,
-                       "Fault plane",   alpha=0.20, size=3)
-        _scatter_fault(self.dip_side,      CLR_DIP_SIDE,
-                       "Dip side",      alpha=0.35, size=5)
-        _scatter_fault(self.anti_dip_side, CLR_ANTI_DIP_SIDE,
-                       "Anti-dip side", alpha=0.35, size=5)
+            ix, iy, iz = np.where(act)
+            gx = xc[ix];  gy = yc[iy];  gz = zc[iz]
+            gv = vals[ix, iy, iz]
+
+            def _scatter_grid_band(mask: np.ndarray, color: str,
+                                   label: str, alpha: float,
+                                   size: float) -> None:
+                bx, by, bz = gx[mask], gy[mask], gz[mask]
+                n = len(bx)
+                if n == 0:
+                    return
+                if n > _MAX_DISP:
+                    rng_idx = np.random.choice(n, _MAX_DISP, replace=False)
+                    bx, by, bz = bx[rng_idx], by[rng_idx], bz[rng_idx]
+                self.ax.scatter(bx, by, bz, c=color, s=size, alpha=alpha,
+                                linewidths=0, label=label, zorder=2)
+
+            # Value thresholds match integrate() calls:
+            #   fault_plane → 0.5  |  anti_dip_side → 0.8  |  dip_side → 1.0
+            # Overlapping cells carry the max value, so thresholds are unambiguous.
+            _scatter_grid_band(gv < 0.6,                 CLR_FAULT_PLANE,   "Fault plane",   0.20, 3)
+            _scatter_grid_band((gv >= 0.6) & (gv < 0.9), CLR_ANTI_DIP_SIDE, "Anti-dip side", 0.35, 5)
+            _scatter_grid_band(gv >= 0.9,                CLR_DIP_SIDE,      "Dip side",      0.35, 5)
 
         # ── Well markers at surface (z=0) ───────────────────────────────
         for well in WELL_LOCATIONS:
