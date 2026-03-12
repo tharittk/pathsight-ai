@@ -1,0 +1,1 @@
+from pathsight3d.container.grid import RegularGrid3D
