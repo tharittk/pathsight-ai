@@ -39,7 +39,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import numpy as np
 
 from mock_data import WELL_LOCATIONS, generate_vertical_well_path
-from pathsight3d.container import RegularGrid3D
+from pathsight3d.container.grid import RegularGrid3D
 from pathsight3d.fault.processing import preprocess_fault
 
 logging.basicConfig(level=logging.INFO,
