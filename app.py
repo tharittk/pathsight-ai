@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PathSight AI – Well Planning Optimization GUI (mock-up)
+PathSight AI – Well Planning Optimization GUI
 
 Layout
 ──────
@@ -9,15 +9,24 @@ Layout
 │   3-D Visualisation           │  X: [____]  Y: [____] │
 │   (matplotlib Axes3D)         │  [Set Wellhead]       │
 │                               │                      │
-│   • clickable well markers    │  ── Selected Wells ── │
-│   • wellhead marker           │  (tree / list view)   │
-│   • optimised well path       │                      │
-│                               │  [Run Optimisation]   │
+│   • fault surfaces (3 bands)  │  ── Selected Wells ── │
+│   • clickable well markers    │  (tree / list view)   │
+│   • wellhead marker           │                      │
+│   • optimised well path       │  [Run Optimisation]   │
 └───────────────────────────────┴──────────────────────┘
+
+On startup the app
+  1. Initialises a RegularGrid3D spanning the G2-TKN fault area.
+  2. Loads and processes Fault_2025_G2_TKN_01_W via preprocess_fault().
+  3. Integrates the three output arrays (fault_plane, dip_side,
+     anti_dip_side) into the grid.
+  4. Displays all three fault point-clouds in the 3-D view.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -26,17 +35,43 @@ matplotlib.use("TkAgg")
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3-D projection)
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import numpy as np
 
 from mock_data import WELL_LOCATIONS, generate_vertical_well_path
+from pathsight3d.container import RegularGrid3D
+from pathsight3d.fault.processing import preprocess_fault
 
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s  %(levelname)-7s  %(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Fault file ──────────────────────────────────────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+FAULT_FILE = os.path.join(_HERE, "input", "faults", "Fault_2025_G2_TKN_01_W")
+
+# ── Grid bounds (expanded ~1 000 m around the fault extent) ────────────
+#   Fault X: ~911 000 – 918 700 m  →  grid: 910 000 – 920 000 m
+#   Fault Y: ~827 000 – 840 500 m  →  grid: 825 000 – 842 000 m
+#   Fault Z:  ~0 – 4 200 m depth   →  grid:       0 –   4 500 m
+GRID_CFG = dict(
+    x_min=910_000, x_max=920_000,
+    y_min=825_000, y_max=842_000,
+    z_min=0,       z_max=4_500,
+    dx=100, dy=100, dz=100,
+)
+
+# ── max display points per fault cloud (subsampled for render speed) ────
+_MAX_DISP = 3_000
 
 # ── Colour palette ──────────────────────────────────────────────────────
-CLR_WELL_DEFAULT   = "#1f77b4"   # blue – unselected wells
+CLR_WELL_DEFAULT   = "#1f77b4"   # blue  – unselected wells
 CLR_WELL_SELECTED  = "#ff7f0e"   # orange – selected wells
-CLR_WELLHEAD       = "#d62728"   # red – wellhead platform
+CLR_WELLHEAD       = "#d62728"   # red   – wellhead platform
 CLR_WELL_PATH      = "#2ca02c"   # green – optimised well path
+CLR_FAULT_PLANE    = "#7f7f7f"   # grey  – interpolated fault surface
+CLR_DIP_SIDE       = "#9467bd"   # purple – dip-side reservoir band
+CLR_ANTI_DIP_SIDE  = "#17becf"   # cyan  – anti-dip-side reservoir band
 MARKER_SIZE        = 80
 
 
@@ -54,9 +89,69 @@ class PathSightApp(tk.Tk):
         self.selected_wells: dict[str, dict] = {}   # name → well dict
         self.well_path: np.ndarray | None = None
 
+        # Fault / grid state (populated by _load_fault_and_grid)
+        self.grid: RegularGrid3D | None = None
+        self.fault_plane: np.ndarray | None = None
+        self.dip_side: np.ndarray | None = None
+        self.anti_dip_side: np.ndarray | None = None
+        self._fault_error: str | None = None   # non-None if loading failed
+
+        # ── Load fault + initialise grid (before building the UI so the
+        #    status bar can show the outcome immediately) ─────────────────
+        self._load_fault_and_grid()
+
         # ── UI construction ─────────────────────────────────────────────
         self._build_ui()
         self._draw_wells()
+
+    # ────────────────────────────────────────────────────────────────────
+    # Fault loading & grid initialisation
+    # ────────────────────────────────────────────────────────────────────
+    def _load_fault_and_grid(self) -> None:
+        """Initialise RegularGrid3D, process fault file, integrate results."""
+        # ── 1. Initialise grid ───────────────────────────────────────────
+        logger.info("Initialising RegularGrid3D …")
+        self.grid = RegularGrid3D(**GRID_CFG)
+        logger.info(self.grid.summary())
+
+        # ── 2. Process fault file ────────────────────────────────────────
+        if not os.path.isfile(FAULT_FILE):
+            self._fault_error = f"Fault file not found: {FAULT_FILE}"
+            logger.error(self._fault_error)
+            return
+
+        logger.info("Processing fault file: %s", FAULT_FILE)
+        try:
+            fp, ds, ads = preprocess_fault(
+                FAULT_FILE,
+                offset_distance=200.0,
+                grid_resolution=50.0,
+                z_step=100.0,
+                resample_spacing=50.0,
+                smooth_window=5,
+                max_turn_angle=60.0,
+            )
+        except Exception as exc:
+            self._fault_error = f"Fault processing failed: {exc}"
+            logger.exception(self._fault_error)
+            return
+
+        self.fault_plane    = fp
+        self.dip_side       = ds
+        self.anti_dip_side  = ads
+
+        logger.info(
+            "Fault arrays → fault_plane: %d pts | dip_side: %d pts | "
+            "anti_dip_side: %d pts",
+            len(fp), len(ds), len(ads),
+        )
+
+        # ── 3. Integrate into grid ────────────────────────────────────────
+        logger.info("Integrating fault arrays into grid …")
+        self.grid.integrate(fp,  label="fault_plane",    value=0.5)
+        self.grid.integrate(ds,  label="dip_side",       value=1.0)
+        self.grid.integrate(ads, label="anti_dip_side",  value=0.8)
+        logger.info("Grid summary after integration:\n%s", self.grid.summary())
 
     # ────────────────────────────────────────────────────────────────────
     # UI Construction
@@ -178,7 +273,18 @@ class PathSightApp(tk.Tk):
 
         # ── Section: Status bar ─────────────────────────────────────────
         row += 1
-        self.status_var = tk.StringVar(value="Ready.")
+        if self._fault_error:
+            _init_status = f"⚠ {self._fault_error}"
+        elif self.fault_plane is not None:
+            _init_status = (
+                f"Fault loaded – fault_plane: {len(self.fault_plane):,} pts | "
+                f"dip: {len(self.dip_side):,} pts | "
+                f"anti-dip: {len(self.anti_dip_side):,} pts | "
+                f"grid active: {self.grid.n_active:,} cells"
+            )
+        else:
+            _init_status = "Ready."
+        self.status_var = tk.StringVar(value=_init_status)
         status_bar = ttk.Label(parent, textvariable=self.status_var,
                                relief=tk.SUNKEN, anchor="w", padding=4)
         status_bar.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -187,23 +293,42 @@ class PathSightApp(tk.Tk):
     # Drawing helpers
     # ────────────────────────────────────────────────────────────────────
     def _draw_wells(self) -> None:
-        """Draw (or re-draw) all well markers and objects on the 3-D axes."""
+        """Draw (or re-draw) all objects on the 3-D axes."""
         self.ax.cla()
         self.ax.set_xlabel("X (m)")
         self.ax.set_ylabel("Y (m)")
         self.ax.set_zlabel("Depth (m)")
-        self.ax.set_title("Well Planning View")
+        self.ax.set_title("Well Planning View – G2-TKN Fault")
         self.ax.invert_zaxis()
 
-        # Set axis limits for better display
-        all_x = [w["x"] for w in WELL_LOCATIONS]
-        all_y = [w["y"] for w in WELL_LOCATIONS]
-        pad = 300
-        self.ax.set_xlim(min(all_x) - pad, max(all_x) + pad)
-        self.ax.set_ylim(min(all_y) - pad, max(all_y) + pad)
-        self.ax.set_zlim(3200, -200)  # depth downward
+        # Set axis limits to the fault / grid bounds
+        self.ax.set_xlim(GRID_CFG["x_min"], GRID_CFG["x_max"])
+        self.ax.set_ylim(GRID_CFG["y_min"], GRID_CFG["y_max"])
+        self.ax.set_zlim(GRID_CFG["z_max"], 0)   # depth positive-down
 
-        # Well markers at surface (z=0)
+        # ── Fault point clouds ──────────────────────────────────────────
+        def _scatter_fault(pts: np.ndarray | None, color: str,
+                           label: str, alpha: float = 0.25,
+                           size: float = 4) -> None:
+            if pts is None or len(pts) == 0:
+                return
+            # Subsample for render performance
+            idx = (np.arange(len(pts))
+                   if len(pts) <= _MAX_DISP
+                   else np.random.choice(len(pts), _MAX_DISP, replace=False))
+            p = pts[idx]
+            self.ax.scatter(p[:, 0], p[:, 1], p[:, 2],
+                            c=color, s=size, alpha=alpha,
+                            linewidths=0, label=label, zorder=2)
+
+        _scatter_fault(self.fault_plane,   CLR_FAULT_PLANE,
+                       "Fault plane",   alpha=0.20, size=3)
+        _scatter_fault(self.dip_side,      CLR_DIP_SIDE,
+                       "Dip side",      alpha=0.35, size=5)
+        _scatter_fault(self.anti_dip_side, CLR_ANTI_DIP_SIDE,
+                       "Anti-dip side", alpha=0.35, size=5)
+
+        # ── Well markers at surface (z=0) ───────────────────────────────
         for well in WELL_LOCATIONS:
             selected = well["name"] in self.selected_wells
             clr = CLR_WELL_SELECTED if selected else CLR_WELL_DEFAULT
@@ -218,7 +343,7 @@ class PathSightApp(tk.Tk):
             self.ax.text(well["x"], well["y"], -80, well["name"],
                          fontsize=7, ha="center", va="top", zorder=5)
 
-        # Wellhead marker
+        # ── Wellhead marker ─────────────────────────────────────────────
         if self.wellhead_xy is not None:
             wx, wy = self.wellhead_xy
             self.ax.scatter(
@@ -231,7 +356,7 @@ class PathSightApp(tk.Tk):
                          fontsize=8, fontweight="bold",
                          ha="center", va="top", color=CLR_WELLHEAD, zorder=6)
 
-        # Optimised well path
+        # ── Optimised well path ─────────────────────────────────────────
         if self.well_path is not None:
             self.ax.plot(
                 self.well_path[:, 0],
@@ -240,6 +365,15 @@ class PathSightApp(tk.Tk):
                 color=CLR_WELL_PATH, linewidth=2.0,
                 label="Well Path", zorder=4,
             )
+
+        # ── Legend (deduplicated) ───────────────────────────────────────
+        handles, labels = self.ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        fault_keys = {"Fault plane", "Dip side", "Anti-dip side", "Well Path"}
+        legend_items = {k: v for k, v in by_label.items() if k in fault_keys}
+        if legend_items:
+            self.ax.legend(legend_items.values(), legend_items.keys(),
+                           loc="upper right", fontsize=7, markerscale=2)
 
         self.canvas.draw_idle()
 
@@ -318,11 +452,11 @@ class PathSightApp(tk.Tk):
         # ── Mock optimisation: straight vertical well path ──────────────
         wx, wy = self.wellhead_xy
         self.well_path = generate_vertical_well_path(wx, wy,
-                                                     max_depth=3000.0,
-                                                     step=1.0)
+                                                     max_depth=4000.0,
+                                                     step=10.0)
         self.status_var.set(
             f"Optimisation complete – vertical path at "
-            f"({wx:.1f}, {wy:.1f}), 0-3000 m"
+            f"({wx:.1f}, {wy:.1f}), 0-4 000 m"
         )
         self._draw_wells()
 

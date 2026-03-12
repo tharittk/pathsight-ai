@@ -1,0 +1,12 @@
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
