@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.interpolate import LinearNDInterpolator
@@ -26,6 +27,7 @@ logger = getLogger(__name__)
 
 
 # ── private helpers ────────────────────────────────────────────────────────────
+
 
 def _load_petrel_fault(filepath: str) -> np.ndarray:
     """Parse a Petrel fault text file → (N, 3) float32 array [X, Y, Z].
@@ -50,7 +52,7 @@ def _load_petrel_fault(filepath: str) -> np.ndarray:
                     continue
     pts = np.array(data, dtype=np.float32)
     if len(pts):
-        pts[:, 2] = np.abs(pts[:, 2])   # positive-down convention
+        pts[:, 2] = np.abs(pts[:, 2])  # positive-down convention
     return pts
 
 
@@ -133,17 +135,17 @@ def _label_dip_side(xy: np.ndarray, interp: LinearNDInterpolator) -> str:
     tan_y /= norm
 
     dstep = 10.0
-    zc  = float(interp(np.array([[xc,         yc        ]]))[0])
-    zx  = float(interp(np.array([[xc + dstep, yc        ]]))[0])
-    zy  = float(interp(np.array([[xc,         yc + dstep]]))[0])
+    zc = float(interp(np.array([[xc, yc]]))[0])
+    zx = float(interp(np.array([[xc + dstep, yc]]))[0])
+    zy = float(interp(np.array([[xc, yc + dstep]]))[0])
 
     # gradient direction of Z (positive = depth increasing = dip direction)
     gx = (zx - zc) / dstep if np.isfinite(zx) and np.isfinite(zc) else 0.0
     gy = (zy - zc) / dstep if np.isfinite(zy) and np.isfinite(zc) else 0.0
 
     # normals to the tangent: left = (-tan_y, tan_x), right = (tan_y, -tan_x)
-    dot_left  = gx * (-tan_y) + gy * tan_x
-    dot_right = gx *   tan_y  + gy * (-tan_x)
+    dot_left = gx * (-tan_y) + gy * tan_x
+    dot_right = gx * tan_y + gy * (-tan_x)
     return "left" if dot_left > dot_right else "right"
 
 
@@ -181,6 +183,7 @@ def _polygon_to_xyz(polygon, z: float) -> np.ndarray | None:
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
+
 
 def preprocess_fault(
     filepath: str,
@@ -263,7 +266,9 @@ def preprocess_fault(
         z_step,
     )
     if len(z_levels) == 0:
-        logger.warning("  No contour levels within depth range – returning fault plane only.")
+        logger.warning(
+            "  No contour levels within depth range – returning fault plane only."
+        )
         empty = np.empty((0, 3), dtype=np.float32)
         return fault_plane, empty, empty
 
@@ -272,7 +277,7 @@ def preprocess_fault(
     logger.info("  Valid contours extracted: %d / %d", len(raw_contours), len(z_levels))
 
     # ── 4. per-contour: clean, buffer, label sides → xyz point clouds ─────────
-    dip_pts_list:  list[np.ndarray] = []
+    dip_pts_list: list[np.ndarray] = []
     anti_pts_list: list[np.ndarray] = []
 
     for z_lev, xy in sorted(raw_contours.items()):
@@ -286,29 +291,39 @@ def preprocess_fault(
 
         # single-sided buffers on each side of the fault trace
         line = LineString(xy)
-        buf_left  = line.buffer( offset_distance, single_sided=True,
-                                  cap_style="flat", join_style="round")
-        buf_right = line.buffer(-offset_distance, single_sided=True,
-                                  cap_style="flat", join_style="round")
+        buf_left = line.buffer(
+            offset_distance, single_sided=True, cap_style="flat", join_style="round"
+        )
+        buf_right = line.buffer(
+            -offset_distance, single_sided=True, cap_style="flat", join_style="round"
+        )
 
         # identify which side is dip (depth increases)
         dip_label = _label_dip_side(xy, interp)
-        buf_dip   = buf_left  if dip_label == "left"  else buf_right
-        buf_anti  = buf_right if dip_label == "left"  else buf_left
+        buf_dip = buf_left if dip_label == "left" else buf_right
+        buf_anti = buf_right if dip_label == "left" else buf_left
 
-        dip_xyz  = _polygon_to_xyz(buf_dip,  z_lev)
+        dip_xyz = _polygon_to_xyz(buf_dip, z_lev)
         anti_xyz = _polygon_to_xyz(buf_anti, z_lev)
 
-        if dip_xyz  is not None:
+        if dip_xyz is not None:
             dip_pts_list.append(dip_xyz)
         if anti_xyz is not None:
             anti_pts_list.append(anti_xyz)
 
-    dip_side      = np.vstack(dip_pts_list)  if dip_pts_list  else np.empty((0, 3), dtype=np.float32)
-    anti_dip_side = np.vstack(anti_pts_list) if anti_pts_list else np.empty((0, 3), dtype=np.float32)
+    dip_side = (
+        np.vstack(dip_pts_list) if dip_pts_list else np.empty((0, 3), dtype=np.float32)
+    )
+    anti_dip_side = (
+        np.vstack(anti_pts_list)
+        if anti_pts_list
+        else np.empty((0, 3), dtype=np.float32)
+    )
 
     logger.info(
         "  fault_plane: %d pts | dip_side: %d pts | anti_dip_side: %d pts",
-        len(fault_plane), len(dip_side), len(anti_dip_side),
+        len(fault_plane),
+        len(dip_side),
+        len(anti_dip_side),
     )
     return fault_plane, dip_side, anti_dip_side

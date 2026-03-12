@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import xarray as xr
 
+
 class RegularGrid3D:
     """
     Regularized 3D grid for geobody data, backed by an xarray.Dataset.
@@ -44,14 +45,13 @@ class RegularGrid3D:
         z_coords = z_min + np.arange(int((z_max - z_min) / dz) + 1) * dz
 
         # initialize as zero and inactive
-        values = np.zeros((len(x_coords), len(y_coords), len(z_coords)), dtype=np.float32)
+        values = np.zeros(
+            (len(x_coords), len(y_coords), len(z_coords)), dtype=np.float32
+        )
         active = np.zeros_like(values, dtype=bool)
 
         self.ds = xr.Dataset(
-            {
-                "values": (["x", "y", "z"], values),
-                "active": (["x", "y", "z"], active)
-            },
+            {"values": (["x", "y", "z"], values), "active": (["x", "y", "z"], active)},
             coords={"x": x_coords, "y": y_coords, "z": z_coords},
         )
         self._dx = float(dx)
@@ -139,13 +139,12 @@ class RegularGrid3D:
             f"  Data variables: {', '.join(self.ds.data_vars.keys())}\n"
         )
 
-
-    def integrate(self,
+    def integrate(
+        self,
         xyz: np.ndarray,
         label: str,
         value: float = 1.0,
     ) -> None:
-
         """Map an (N, 3) array of world-coordinate points onto grid cells in-place.
 
         Each point in *xyz* is snapped to the nearest cell along every axis.
@@ -185,7 +184,7 @@ class RegularGrid3D:
         unique_ijk = np.unique(stacked, axis=0)
 
         vals = self.values.copy()
-        act  = self.active.copy()
+        act = self.active.copy()
 
         for i, j, k in unique_ijk:
             if not act[i, j, k]:
@@ -202,4 +201,3 @@ class RegularGrid3D:
             f"-> {len(unique_ijk):,} cells activated/updated  "
             f"(total active: {self.n_active:,})"
         )
-    
