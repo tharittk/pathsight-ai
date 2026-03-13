@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PathSight AI – Well Planning Optimization GUI
+PathSight - Well Planning Optimization GUI
 
 Layout
 ──────
@@ -63,13 +63,13 @@ GRID_CFG = dict(
     y_max=842_000,
     z_min=0,
     z_max=4_500,
-    dx=100,
-    dy=100,
-    dz=100,
+    dx=50,
+    dy=50,
+    dz=50,
 )
 
 # ── max display points per fault cloud (subsampled for render speed) ────
-_MAX_DISP = 30_000
+_MAX_DISP = 3_000
 
 # ── Colour palette ──────────────────────────────────────────────────────
 CLR_WELL_DEFAULT = "#1f77b4"  # blue  – unselected wells
@@ -87,7 +87,7 @@ class PathSightApp(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("PathSight AI – Well Planning Optimisation")
+        self.title("PathSight 3D – Well Planning Optimisation")
         self.geometry("1400x850")
         self.minsize(1100, 700)
 
@@ -98,10 +98,6 @@ class PathSightApp(tk.Tk):
 
         # Fault / grid state (populated by _load_fault_and_grid)
         self.grid: RegularGrid3D | None = None
-        # self.fault_plane: np.ndarray | None = None
-        # self.dip_side: np.ndarray | None = None
-        # self.anti_dip_side: np.ndarray | None = None
-        # self._fault_error: str | None = None   # non-None if loading failed
 
         # ── Load fault + initialise grid (before building the UI so the
         #    status bar can show the outcome immediately) ─────────────────
@@ -109,7 +105,7 @@ class PathSightApp(tk.Tk):
 
         # ── UI construction ─────────────────────────────────────────────
         self._build_ui()
-        self._draw_wells()
+        self._draw_view()
 
     # ────────────────────────────────────────────────────────────────────
     # Fault loading & grid initialisation
@@ -131,8 +127,8 @@ class PathSightApp(tk.Tk):
             fp, ds, ads = preprocess_fault(
                 FAULT_FILE,
                 offset_distance=200.0,
-                grid_resolution=50.0,
-                z_step=100.0,
+                grid_resolution=max(self.grid.dx, self.grid.dy),
+                z_step=self.grid.dz,
                 resample_spacing=50.0,
                 smooth_window=5,
                 max_turn_angle=60.0,
@@ -187,12 +183,41 @@ class PathSightApp(tk.Tk):
         # Invert Z so depth increases downward
         self.ax.invert_zaxis()
 
-        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # ── Small inset 2-D axes – Z-slice preview (bottom-right) ─────────
+        self.ax_slice = self.fig.add_axes([0.75, 0.07, 0.24, 0.18])
+        self.ax_slice.set_facecolor("#0d0d1a")
+        self.ax_slice.set_title("Z Slice", fontsize=8, pad=3, color="white")
+        self.ax_slice.set_xlabel("X (m)", fontsize=6)
+        self.ax_slice.set_ylabel("Y (m)", fontsize=6)
+        self.ax_slice.tick_params(labelsize=6, colors="#aaaaaa")
+        for sp in self.ax_slice.spines.values():
+            sp.set_edgecolor("#444444")
+        self.ax_slice.patch.set_alpha(0.85)
 
+        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
+
+        # Pack bottom controls first so canvas correctly fills remaining space
         toolbar = NavigationToolbar2Tk(self.canvas, parent)
         toolbar.update()
         toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # ── Z-slice control strip (sits just above the toolbar) ────────────
+        slice_bar = ttk.Frame(parent)
+        slice_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 2))
+
+        ttk.Button(
+            slice_bar, text="Update Slice", command=self._draw_slice
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        z_default = str(int((GRID_CFG["z_min"] + GRID_CFG["z_max"]) / 2))
+        self.entry_z_slice = ttk.Entry(slice_bar, width=8)
+        self.entry_z_slice.insert(0, z_default)
+        self.entry_z_slice.pack(side=tk.RIGHT, padx=(0, 2))
+        self.entry_z_slice.bind("<Return>", lambda _e: self._draw_slice())
+
+        ttk.Label(slice_bar, text="Z Slice (m):").pack(side=tk.RIGHT, padx=(0, 2))
+
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # Connect pick event for clicking on wells
         self.fig.canvas.mpl_connect("pick_event", self._on_pick)
@@ -206,19 +231,18 @@ class PathSightApp(tk.Tk):
         # ── Section: Wellhead Location ──────────────────────────────────
         sec_wh = ttk.LabelFrame(parent, text="Wellhead Platform Location", padding=10)
         sec_wh.grid(row=row, column=0, sticky="ew", padx=8, pady=(8, 4))
-        row += 1
 
         ttk.Label(sec_wh, text="X (m):").grid(row=0, column=0, sticky="w")
         self.entry_x = ttk.Entry(sec_wh, width=12)
         self.entry_x.grid(row=0, column=1, padx=4, pady=2)
 
-        ttk.Label(sec_wh, text="Y (m):").grid(row=1, column=0, sticky="w")
+        ttk.Label(sec_wh, text="Y (m):").grid(row=0, column=2, sticky="w")
         self.entry_y = ttk.Entry(sec_wh, width=12)
-        self.entry_y.grid(row=1, column=1, padx=4, pady=2)
+        self.entry_y.grid(row=0, column=3, padx=4, pady=2)
 
         btn_wh = ttk.Button(sec_wh, text="Set Wellhead", command=self._on_set_wellhead)
-        btn_wh.grid(row=2, column=0, columnspan=2, pady=(6, 0))
-
+        btn_wh.grid(row=0, column=4, columnspan=2, pady=(6, 0))
+        row += 1
         # ── Section: Instructions ───────────────────────────────────────
         sec_info = ttk.LabelFrame(parent, text="Instructions", padding=10)
         sec_info.grid(row=row, column=0, sticky="ew", padx=8, pady=4)
@@ -278,13 +302,13 @@ class PathSightApp(tk.Tk):
     # ────────────────────────────────────────────────────────────────────
     # Drawing helpers
     # ────────────────────────────────────────────────────────────────────
-    def _draw_wells(self) -> None:
+    def _draw_view(self) -> None:
         """Draw (or re-draw) all objects on the 3-D axes."""
         self.ax.cla()
         self.ax.set_xlabel("X (m)")
         self.ax.set_ylabel("Y (m)")
         self.ax.set_zlabel("Depth (m)")
-        self.ax.set_title("Well Planning View – G2-TKN Fault")
+        self.ax.set_title("Well Planning View")
         self.ax.invert_zaxis()
 
         # Set axis limits to the fault / grid bounds
@@ -419,6 +443,73 @@ class PathSightApp(tk.Tk):
                 markerscale=2,
             )
 
+        self._draw_slice()
+
+    def _draw_slice(self) -> None:
+        """Redraw the Z-slice inset from the current entry_z_slice value."""
+        try:
+            z_val = float(self.entry_z_slice.get())
+        except ValueError:
+            self.status_var.set("Z slice: enter a valid depth in metres.")
+            return
+
+        ax = self.ax_slice
+        ax.cla()
+        ax.set_facecolor("#0d0d1a")
+        ax.tick_params(labelsize=6, colors="#aaaaaa")
+        ax.set_xlabel("X (m)", fontsize=6)
+        ax.set_ylabel("Y (m)", fontsize=6)
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#444444")
+
+        if self.grid is not None and self.grid.n_active > 0:
+            # Snap to the nearest available Z level in the grid
+            actual_z = float(
+                self.grid.ds.coords["z"].sel(z=z_val, method="nearest").values
+            )
+            ax.set_title(f"Z = {actual_z:.0f} m", fontsize=8, pad=3, color="white")
+
+            ds_slice = self.grid.ds.sel(z=actual_z, method="nearest")
+            vals_2d = ds_slice["values"].values   # (nx, ny)
+            act_2d  = ds_slice["active"].values   # (nx, ny) bool
+            xc = self.grid.ds.coords["x"].values
+            yc = self.grid.ds.coords["y"].values
+
+            ix, iy = np.where(act_2d)
+            if len(ix) > 0:
+                gx = xc[ix]
+                gy = yc[iy]
+                gv = vals_2d[ix, iy]
+
+                for band_mask, color, label in (
+                    (gv < 0.6,                   CLR_FAULT_PLANE,   "Fault plane"),
+                    ((gv >= 0.6) & (gv < 0.9),   CLR_ANTI_DIP_SIDE, "Anti-dip"),
+                    (gv >= 0.9,                   CLR_DIP_SIDE,      "Dip side"),
+                ):
+                    if band_mask.any():
+                        ax.scatter(
+                            gx[band_mask], gy[band_mask],
+                            c=color, s=4, alpha=0.8,
+                            linewidths=0, label=label,
+                        )
+                ax.legend(
+                    fontsize=6, loc="upper right", markerscale=2,
+                    labelcolor="white",
+                    facecolor="#1a1a2e", edgecolor="#444444",
+                )
+            else:
+                ax.set_title(
+                    f"Z = {actual_z:.0f} m  (no data)",
+                    fontsize=8, pad=3, color="white",
+                )
+        else:
+            ax.set_title("Z Slice", fontsize=8, pad=3, color="white")
+
+        ax.set_xlim(GRID_CFG["x_min"], GRID_CFG["x_max"])
+        ax.set_ylim(GRID_CFG["y_min"], GRID_CFG["y_max"])
+        ax.ticklabel_format(style="sci", scilimits=(0, 0), axis="both")
+        ax.patch.set_alpha(0.85)
+
         self.canvas.draw_idle()
 
     def _refresh_tree(self) -> None:
@@ -469,7 +560,7 @@ class PathSightApp(tk.Tk):
             self.selected_wells[well["name"]] = well
             self.status_var.set(f"Selected {well['name']}")
 
-        self._draw_wells()
+        self._draw_view()
         self._refresh_tree()
 
     def _on_set_wellhead(self) -> None:
@@ -486,7 +577,7 @@ class PathSightApp(tk.Tk):
         self.wellhead_xy = (x, y)
         self.well_path = None  # clear previous path
         self.status_var.set(f"Wellhead set at ({x:.1f}, {y:.1f})")
-        self._draw_wells()
+        self._draw_view()
 
     def _on_run(self) -> None:
         """Run mock optimisation – generates a vertical well path."""
@@ -510,7 +601,7 @@ class PathSightApp(tk.Tk):
             f"Optimisation complete – vertical path at "
             f"({wx:.1f}, {wy:.1f}), 0-4 000 m"
         )
-        self._draw_wells()
+        self._draw_view()
 
 
 # ────────────────────────────────────────────────────────────────────────

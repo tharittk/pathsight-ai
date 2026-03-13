@@ -18,6 +18,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.path import Path as MplPath
 from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import uniform_filter1d
 from shapely.geometry import LineString
@@ -170,16 +171,44 @@ def _extract_contours(
     return contours
 
 
-def _polygon_to_xyz(polygon, z: float) -> np.ndarray | None:
-    """Convert a shapely Polygon exterior to an (N, 3) xyz array at depth *z*."""
+def _polygon_to_xyz(
+    polygon, z: float, xg: np.ndarray, yg: np.ndarray
+) -> np.ndarray | None:
+    """Return every grid point whose (x, y) lies inside *polygon* as (N, 3) xyz.
+
+    Candidate points come from the 1-D grid vectors *xg* / *yg* (clipped to the
+    polygon bounding box for speed).  A vectorised point-in-polygon test via
+    ``matplotlib.path.Path`` fills the interior, correctly subtracting any holes.
+    This gives a dense, filled cloud rather than just the boundary ring.
+    """
     if polygon is None or polygon.is_empty:
         return None
     if polygon.geom_type == "MultiPolygon":
         polygon = max(polygon.geoms, key=lambda g: g.area)
     if polygon.geom_type != "Polygon":
         return None
-    coords = np.array(polygon.exterior.coords)
-    return np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z)])
+
+    # Clip grid vectors to the polygon bounding box to reduce work
+    minx, miny, maxx, maxy = polygon.bounds
+    xg_clip = xg[(xg >= minx) & (xg <= maxx)]
+    yg_clip = yg[(yg >= miny) & (yg <= maxy)]
+    if len(xg_clip) == 0 or len(yg_clip) == 0:
+        return None
+
+    Xc, Yc = np.meshgrid(xg_clip, yg_clip)
+    pts = np.column_stack([Xc.ravel(), Yc.ravel()])
+
+    # Vectorised point-in-polygon: exterior ring inclusion minus any holes
+    mask = MplPath(np.array(polygon.exterior.coords)).contains_points(pts)
+    for ring in polygon.interiors:
+        mask &= ~MplPath(np.array(ring.coords)).contains_points(pts)
+
+    inside = pts[mask]
+    if len(inside) == 0:
+        return None
+    return np.column_stack(
+        [inside, np.full(len(inside), z, dtype=np.float32)]
+    )
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
@@ -303,8 +332,8 @@ def preprocess_fault(
         buf_dip = buf_left if dip_label == "left" else buf_right
         buf_anti = buf_right if dip_label == "left" else buf_left
 
-        dip_xyz = _polygon_to_xyz(buf_dip, z_lev)
-        anti_xyz = _polygon_to_xyz(buf_anti, z_lev)
+        dip_xyz = _polygon_to_xyz(buf_dip, z_lev, xg, yg)
+        anti_xyz = _polygon_to_xyz(buf_anti, z_lev, xg, yg)
 
         if dip_xyz is not None:
             dip_pts_list.append(dip_xyz)
